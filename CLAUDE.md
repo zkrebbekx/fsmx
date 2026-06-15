@@ -14,10 +14,17 @@ runtime dependencies** — keep it that way.
 
 | File         | Responsibility                                                       |
 | ------------ | -------------------------------------------------------------------- |
-| `fsm.go`     | `Machine`, `New`, `Fire`/`Can`/`Available`/`Init`, errors, package doc.|
+| `fsm.go`     | `Machine`, `New`, `NewFor`, `Stateful`, `Fire`/`Can`/`Available`/`Init`, errors, the mental-model package doc.|
 | `builder.go` | `Builder`: `Transition`/`Guard`/`OnEnter`/`OnExit`/`OnTransition`/`Build`.|
-| `field.go`   | `Field[S]`, an embeddable state holder for models without a column.  |
+| `field.go`   | `Field[S]`, an embeddable state holder (satisfies `Stateful`, pairs with `NewFor`).|
 | `mermaid.go` | `Mermaid` / `MermaidFor`: render the machine as a state diagram.     |
+| `docs/concepts.md` | Concept-by-concept guide (the canonical explanation).          |
+| `examples/order`   | The guide as a runnable program (`go run ./examples/order`).   |
+
+Two constructors: `NewFor[S,E,M Stateful[S]]` (model carries state — embed `Field`
+or implement `GetState`/`SetState`) is the documented default; `New` takes explicit
+get/set accessors for mapping onto a DB column without methods. `NewFor` is just
+`New` with the accessors wired to the interface.
 
 The machine is immutable after `Build` and safe to share across goroutines; the
 only mutation is to the model passed to `Fire` (the caller's to synchronise).

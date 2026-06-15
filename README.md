@@ -14,22 +14,20 @@ guard and callback, and the machine draws itself.
 
 > **Status:** pre-1.0, actively developed. **Zero dependencies.**
 
-## Why
+## The idea in one sentence
 
-Go's state-machine libraries make states and events `string` or `interface{}`, so
-mistakes surface at runtime and there's no picture of the machine. fsmx is the
-missing piece:
+A state machine answers: *given a **thing** in some **state**, which **event**
+moves it to which next state, and is that allowed right now?* fsmx makes those
+three nouns your own Go types:
 
-- **Type-safe.** `Machine[S, E, M]` over your own comparable state and event
-  types. Wrong event? Won't compile. No magic strings.
-- **Your model, threaded through.** Guards and callbacks receive the entity that
-  owns the state, so business rules live where the data is.
-- **Self-documenting.** `Mermaid()` renders a `stateDiagram-v2` you can drop into
-  a README or an admin page — `MermaidFor(model)` even highlights where one entity
-  is right now.
-- **Atomic transitions.** A failing guard or callback never leaves a
-  half-applied state.
-- **Nothing to depend on.** The whole library is the standard library.
+| Noun | Type param | Example |
+| ---- | ---------- | ------- |
+| **State** — where a thing can be | `S` | `Draft`, `Paid`, `Shipped` |
+| **Event** — what happens to it | `E` | `Pay`, `Ship`, `Cancel` |
+| **Model** — the thing itself | `M` | `*Order` |
+
+The machine holds the rules; your **model** holds the current state. Wrong event?
+Won't compile. No magic strings.
 
 ## Install
 
@@ -39,6 +37,9 @@ go get github.com/zkrebbekx/fsmx
 
 ## Quick start
 
+Embed `fsmx.Field` so the model carries its own state, and build with `NewFor` —
+no boilerplate:
+
 ```go
 type OrderState string
 const (Draft, Paid, Shipped, Cancelled OrderState = "draft", "paid", "shipped", "cancelled")
@@ -47,56 +48,77 @@ type OrderEvent string
 const (Pay, Ship, Cancel OrderEvent = "pay", "ship", "cancel")
 
 type Order struct {
-	Status string // the persisted column
-	Paid   bool
+	fsmx.Field[OrderState] // state lives here
+	PaymentCaptured bool
 }
 
-m, err := fsmx.New[OrderState, OrderEvent, *Order](Draft,
-	func(o *Order) OrderState    { return OrderState(o.Status) }, // read state
-	func(o *Order, s OrderState) { o.Status = string(s) },        // write state
-).
-	Transition(Draft, Pay, Paid).
+m, err := fsmx.NewFor[OrderState, OrderEvent, *Order](Draft).
+	Transition(Draft, Pay, Paid).         // event Pay: Draft -> Paid
 	Transition(Paid, Ship, Shipped).
 	Transition(Draft, Cancel, Cancelled).
 	Transition(Paid, Cancel, Cancelled).
-	Guard(Paid, Ship, func(ctx context.Context, o *Order) error {
-		if !o.Paid {
+	Guard(Paid, Ship, func(ctx context.Context, o *Order) error { // a precondition
+		if !o.PaymentCaptured {
 			return fmt.Errorf("payment not captured")
 		}
 		return nil
 	}).
-	OnEnter(Shipped, func(ctx context.Context, o *Order) error {
+	OnEnter(Shipped, func(ctx context.Context, o *Order) error { // a side effect
 		return sendShipmentEmail(o)
 	}).
 	Build()
-
-// Drive it:
-err = m.Fire(ctx, order, Ship) // guards → exit → advance → enter; atomic
-m.Can(order, Cancel)           // structural check
-m.Available(order)             // []OrderEvent valid from the current state
-```
-
-## State lives where you want
-
-The `get`/`set` accessors decouple the machine from how state is stored — point
-them at a **database column** (above), and the same machine drives
-[filtrx](https://github.com/zkrebbekx/filtrx)-style reads and writes of that
-column.
-
-For ad-hoc models with no column yet, embed `Field`:
-
-```go
-type Door struct {
-	fsmx.Field[DoorState]
+if err != nil {
+	log.Fatal(err) // a bad transition table is caught here, once
 }
 
-m, _ := fsmx.New[DoorState, DoorEvent, *Door](Closed,
-	(*Door).GetState, (*Door).SetState).
-	Transition(Closed, Open, Opened).
-	Build()
+order := &Order{}
+m.Init(order)                  // start in Draft
+err = m.Fire(ctx, order, Pay)  // Draft -> Paid
+m.Available(order)             // []OrderEvent you can fire now, e.g. [ship cancel]
+```
 
-d := &Door{}
-m.Init(d) // a fresh model starts in the initial state
+## Core concepts
+
+Each links to the full explanation in **[docs/concepts.md](docs/concepts.md)**;
+every concept also has a runnable [example on pkg.go.dev](https://pkg.go.dev/github.com/zkrebbekx/fsmx#pkg-examples).
+
+| Concept | What it is |
+| ------- | ---------- |
+| **State / Event / Model** | Your own types — `Machine[S, E, M]`. |
+| **Transition** | `Transition(from, event, to)` — one target per `(state, event)`, deterministic. |
+| **Build** | Freezes and validates the table once; programming mistakes surface here, not at `Fire`. |
+| **Fire** | Applies an event: looks up the transition, runs guards, runs callbacks, advances state — atomically. |
+| **Guard** | A precondition that decides *whether* a transition proceeds (not *which*). |
+| **Callbacks** | `OnEnter` / `OnExit` / `OnTransition` side effects, with the model in hand. |
+| **Observe** | One hook after *every* transition — audit, metrics, or persist the model. |
+| **Can / Available / Init** | Ask what's possible from a state; start a fresh model. |
+| **Introspection** | `States` / `Events` / `IsFinal` / `Unreachable` — for tooling and tests. |
+| **Field / Stateful** | How the model stores state (embed `Field`, or implement `GetState`/`SetState`). |
+| **Mermaid** | The machine draws itself (with entry and exit arrows). |
+
+Prefer to read code? [`examples/order`](examples/order) is the whole guide as a
+runnable program — `go run ./examples/order`.
+
+## Where state lives — two ways
+
+fsmx never reflects over your model; it reads and writes state through two
+functions. Supply them however suits you:
+
+**The model owns its state** — embed `Field[S]` (gives `GetState`/`SetState`,
+satisfying `Stateful[S]`) and use `NewFor`, as above. No accessor functions.
+
+**State is an existing column or field** — use `New` with explicit get/set, no
+methods added to your row type. This is the bridge to a database: point the
+accessors at a `Status` column and the same machine drives
+[filtrx](https://github.com/zkrebbekx/filtrx)-style reads and writes of it.
+
+```go
+type Order struct{ Status string } // a plain DB row
+
+m, _ := fsmx.New[OrderState, OrderEvent, *Order](Draft,
+	func(o *Order) OrderState    { return OrderState(o.Status) },
+	func(o *Order, s OrderState) { o.Status = string(s) },
+).Transition(Draft, Pay, Paid).Build()
 ```
 
 ## Transition semantics
@@ -127,12 +149,34 @@ stateDiagram-v2
   paid --> shipped: ship
   draft --> cancelled: cancel
   paid --> cancelled: cancel
+  shipped --> [*]
+  cancelled --> [*]
 ```
 
-`MermaidFor(order)` adds a highlight class to the order's current state for a live
-status diagram. The output is plain Mermaid text — render it anywhere, or pass it
-to [go-mermaid](https://github.com/zkrebbekx/go-mermaid) for programmatic
-rendering and embedding.
+Terminal states (no outgoing transition) get an exit arrow. `MermaidFor(order)`
+adds a highlight class to the order's current state for a live status diagram. The
+output is plain Mermaid text — render it anywhere, or pass it to
+[go-mermaid](https://github.com/zkrebbekx/go-mermaid) for programmatic rendering.
+
+## Cross-cutting hooks and introspection
+
+`Observe` runs one callback after every successful transition — the natural home
+for an audit log, metrics, or persisting the model (e.g. a
+[filtrx](https://github.com/zkrebbekx/filtrx) `Update` of the status column):
+
+```go
+m, _ := fsmx.NewFor[OrderState, OrderEvent, *Order](Draft).
+	Transition(Draft, Pay, Paid).
+	Observe(func(ctx context.Context, o *Order, from OrderState, ev OrderEvent, to OrderState) error {
+		log.Printf("order %d: %s --%s--> %s", o.ID, from, ev, to)
+		return nil // an error rolls the transition back
+	}).
+	Build()
+```
+
+For tooling and tests, a built machine describes itself: `States()`, `Events()`,
+`IsFinal(state)`, and `Unreachable()` (states with no path from the initial one —
+a handy assertion that your table has no orphans).
 
 ## Design notes
 

@@ -30,6 +30,12 @@ func (m *Machine[S, E, M]) mermaid(highlight *S) string {
 	for _, t := range m.ordered {
 		fmt.Fprintf(&b, "  %v --> %v: %v\n", t.from, t.to, t.ev)
 	}
+	// Terminal states get an exit arrow, so the diagram shows where a workflow ends.
+	for _, s := range m.states {
+		if m.IsFinal(s) {
+			fmt.Fprintf(&b, "  %v --> [*]\n", s)
+		}
+	}
 	if highlight != nil {
 		fmt.Fprintf(&b, "  class %v current\n", *highlight)
 		b.WriteString("  classDef current fill:#ffd54f,stroke:#f57f17,font-weight:bold\n")

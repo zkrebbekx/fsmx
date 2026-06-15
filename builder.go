@@ -21,7 +21,39 @@ func (b *Builder[S, E, M]) Transition(from S, ev E, to S) *Builder[S, E, M] {
 	}
 	b.m.transitions[key] = to
 	b.m.ordered = append(b.m.ordered, transition[S, E]{from: from, to: to, ev: ev})
+	b.m.states = appendUnique(b.m.states, from, to)
+	b.m.events = appendUnique(b.m.events, ev)
 	return b
+}
+
+// Observe registers a callback that runs after every successful transition,
+// receiving the from/event/to of the move — for audit logs, metrics, or
+// persisting the model. Observers run in the order added, after the per-state and
+// per-transition callbacks; an error rolls the transition back.
+func (b *Builder[S, E, M]) Observe(fn Observer[S, E, M]) *Builder[S, E, M] {
+	if fn == nil {
+		b.fail("nil observer")
+		return b
+	}
+	b.m.observers = append(b.m.observers, fn)
+	return b
+}
+
+// appendUnique appends each value not already present, preserving order.
+func appendUnique[T comparable](dst []T, vals ...T) []T {
+	for _, v := range vals {
+		found := false
+		for _, existing := range dst {
+			if existing == v {
+				found = true
+				break
+			}
+		}
+		if !found {
+			dst = append(dst, v)
+		}
+	}
+	return dst
 }
 
 // Guard adds a precondition to the (from, ev) transition. Guards run, in the

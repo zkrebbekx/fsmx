@@ -19,6 +19,8 @@ func TestMermaid(t *testing.T) {
   paid --> shipped: ship
   draft --> cancelled: cancel
   paid --> cancelled: cancel
+  shipped --> [*]
+  cancelled --> [*]
 `)
 			})
 		})
