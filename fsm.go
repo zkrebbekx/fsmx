@@ -95,9 +95,19 @@ type Machine[S, E comparable, M any] struct {
 	onEnter     map[S][]Callback[M]
 	onExit      map[S][]Callback[M]
 	onTrans     map[edge[S, E]][]Callback[M]
+	observers   []Observer[S, E, M]
 
 	ordered []transition[S, E] // build order, for a deterministic diagram
+	states  []S                // every state, declaration order, deduplicated
+	events  []E                // every event, declaration order, deduplicated
 }
+
+// Observer runs after every successful transition, receiving the model and the
+// from/event/to of the move. It is the place for cross-cutting concerns —
+// audit logging, metrics, or persisting the model — that apply to all
+// transitions rather than one. An error rolls the transition back, exactly like a
+// callback.
+type Observer[S, E comparable, M any] func(ctx context.Context, model M, from S, ev E, to S) error
 
 type edge[S, E comparable] struct {
 	from S
@@ -199,7 +209,54 @@ func (m *Machine[S, E, M]) Fire(ctx context.Context, model M, ev E) error {
 			return err
 		}
 	}
+	for _, ob := range m.observers {
+		if err := ob(ctx, model, from, ev, to); err != nil {
+			m.set(model, from)
+			return err
+		}
+	}
 	return nil
+}
+
+// States returns every state mentioned by a transition, in declaration order.
+func (m *Machine[S, E, M]) States() []S { return append([]S(nil), m.states...) }
+
+// Events returns every event mentioned by a transition, in declaration order.
+func (m *Machine[S, E, M]) Events() []E { return append([]E(nil), m.events...) }
+
+// IsFinal reports whether s has no outgoing transitions — a terminal state from
+// which the machine cannot move.
+func (m *Machine[S, E, M]) IsFinal(s S) bool {
+	for _, t := range m.ordered {
+		if t.from == s {
+			return false
+		}
+	}
+	return true
+}
+
+// Unreachable returns the states that cannot be reached from the initial state by
+// any sequence of transitions (the initial state itself is always reachable). An
+// empty result means every declared state is reachable — useful as a build-time
+// sanity check in a test.
+func (m *Machine[S, E, M]) Unreachable() []S {
+	seen := map[S]bool{m.initial: true}
+	for grew := true; grew; {
+		grew = false
+		for _, t := range m.ordered {
+			if seen[t.from] && !seen[t.to] {
+				seen[t.to] = true
+				grew = true
+			}
+		}
+	}
+	var out []S
+	for _, s := range m.states {
+		if !seen[s] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Can reports whether a transition exists from the model's current state for ev.

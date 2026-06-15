@@ -90,9 +90,11 @@ every concept also has a runnable [example on pkg.go.dev](https://pkg.go.dev/git
 | **Fire** | Applies an event: looks up the transition, runs guards, runs callbacks, advances state — atomically. |
 | **Guard** | A precondition that decides *whether* a transition proceeds (not *which*). |
 | **Callbacks** | `OnEnter` / `OnExit` / `OnTransition` side effects, with the model in hand. |
+| **Observe** | One hook after *every* transition — audit, metrics, or persist the model. |
 | **Can / Available / Init** | Ask what's possible from a state; start a fresh model. |
+| **Introspection** | `States` / `Events` / `IsFinal` / `Unreachable` — for tooling and tests. |
 | **Field / Stateful** | How the model stores state (embed `Field`, or implement `GetState`/`SetState`). |
-| **Mermaid** | The machine draws itself. |
+| **Mermaid** | The machine draws itself (with entry and exit arrows). |
 
 Prefer to read code? [`examples/order`](examples/order) is the whole guide as a
 runnable program — `go run ./examples/order`.
@@ -147,12 +149,34 @@ stateDiagram-v2
   paid --> shipped: ship
   draft --> cancelled: cancel
   paid --> cancelled: cancel
+  shipped --> [*]
+  cancelled --> [*]
 ```
 
-`MermaidFor(order)` adds a highlight class to the order's current state for a live
-status diagram. The output is plain Mermaid text — render it anywhere, or pass it
-to [go-mermaid](https://github.com/zkrebbekx/go-mermaid) for programmatic
-rendering and embedding.
+Terminal states (no outgoing transition) get an exit arrow. `MermaidFor(order)`
+adds a highlight class to the order's current state for a live status diagram. The
+output is plain Mermaid text — render it anywhere, or pass it to
+[go-mermaid](https://github.com/zkrebbekx/go-mermaid) for programmatic rendering.
+
+## Cross-cutting hooks and introspection
+
+`Observe` runs one callback after every successful transition — the natural home
+for an audit log, metrics, or persisting the model (e.g. a
+[filtrx](https://github.com/zkrebbekx/filtrx) `Update` of the status column):
+
+```go
+m, _ := fsmx.NewFor[OrderState, OrderEvent, *Order](Draft).
+	Transition(Draft, Pay, Paid).
+	Observe(func(ctx context.Context, o *Order, from OrderState, ev OrderEvent, to OrderState) error {
+		log.Printf("order %d: %s --%s--> %s", o.ID, from, ev, to)
+		return nil // an error rolls the transition back
+	}).
+	Build()
+```
+
+For tooling and tests, a built machine describes itself: `States()`, `Events()`,
+`IsFinal(state)`, and `Unreachable()` (states with no path from the initial one —
+a handy assertion that your table has no orphans).
 
 ## Design notes
 

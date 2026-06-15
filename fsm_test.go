@@ -170,6 +170,86 @@ func TestCanAndAvailable(t *testing.T) {
 	})
 }
 
+func TestObserve(t *testing.T) {
+	ctx := context.Background()
+	get := func(o *order) orderState { return orderState(o.Status) }
+	set := func(o *order, s orderState) { o.Status = string(s) }
+
+	Convey("Given a machine with an observer", t, func() {
+		var moves []string
+		m, _ := New[orderState, orderEvent, *order](draft, get, set).
+			Transition(draft, pay, paid).
+			Observe(func(_ context.Context, _ *order, from orderState, ev orderEvent, to orderState) error {
+				moves = append(moves, fmt.Sprintf("%s-%s->%s", from, ev, to))
+				return nil
+			}).
+			Build()
+		o := &order{}
+		m.Init(o)
+
+		Convey("When a transition succeeds", func() {
+			So(m.Fire(ctx, o, pay), ShouldBeNil)
+			Convey("Then the observer sees from/event/to", func() {
+				So(moves, ShouldResemble, []string{"draft-pay->paid"})
+			})
+		})
+	})
+
+	Convey("Given an observer that errors", t, func() {
+		boom := errors.New("observer failed")
+		m, _ := New[orderState, orderEvent, *order](draft, get, set).
+			Transition(draft, pay, paid).
+			Observe(func(_ context.Context, _ *order, _ orderState, _ orderEvent, _ orderState) error { return boom }).
+			Build()
+		o := &order{}
+		m.Init(o)
+
+		Convey("When firing", func() {
+			err := m.Fire(ctx, o, pay)
+			Convey("Then it surfaces and the state rolls back", func() {
+				So(errors.Is(err, boom), ShouldBeTrue)
+				So(o.Status, ShouldEqual, "draft")
+			})
+		})
+	})
+}
+
+func TestIntrospection(t *testing.T) {
+	Convey("Given the order machine", t, func() {
+		m := orderMachine()
+
+		Convey("Then States and Events list everything in declaration order", func() {
+			So(m.States(), ShouldResemble, []orderState{draft, paid, shipped, cancelled})
+			So(m.Events(), ShouldResemble, []orderEvent{pay, ship, cancel})
+		})
+
+		Convey("Then IsFinal marks terminal states", func() {
+			So(m.IsFinal(shipped), ShouldBeTrue)
+			So(m.IsFinal(cancelled), ShouldBeTrue)
+			So(m.IsFinal(draft), ShouldBeFalse)
+		})
+
+		Convey("Then every state is reachable from the initial state", func() {
+			So(m.Unreachable(), ShouldBeEmpty)
+		})
+	})
+
+	Convey("Given a machine with an orphaned state", t, func() {
+		get := func(o *order) orderState { return orderState(o.Status) }
+		set := func(o *order, s orderState) { o.Status = string(s) }
+		// shipped -> cancelled is the only way into a branch unreachable from draft.
+		m, _ := New[orderState, orderEvent, *order](draft, get, set).
+			Transition(draft, pay, paid).
+			Transition(shipped, cancel, cancelled). // shipped is never entered
+			Build()
+
+		Convey("Then Unreachable reports the orphans", func() {
+			So(m.Unreachable(), ShouldContain, shipped)
+			So(m.Unreachable(), ShouldContain, cancelled)
+		})
+	})
+}
+
 func TestBuildErrors(t *testing.T) {
 	get := func(o *order) orderState { return orderState(o.Status) }
 	set := func(o *order, s orderState) { o.Status = string(s) }

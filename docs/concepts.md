@@ -220,12 +220,48 @@ stateDiagram-v2
   paid --> shipped: ship
   draft --> cancelled: cancel
   paid --> cancelled: cancel
+  shipped --> [*]
+  cancelled --> [*]
 ```
 
-`m.MermaidFor(order)` adds a highlight to the order's *current* state — drop it on
-an admin page to show where one entity is right now. The output is plain Mermaid
-text; render it anywhere, or feed it to
+Terminal states — `shipped` and `cancelled`, which have no outgoing transition —
+get an exit arrow. `m.MermaidFor(order)` adds a highlight to the order's *current*
+state — drop it on an admin page to show where one entity is right now. The output
+is plain Mermaid text; render it anywhere, or feed it to
 [go-mermaid](https://github.com/zkrebbekx/go-mermaid).
+
+## 10. Observers — one hook for every transition
+
+A guard or callback is per-transition. An **observer** runs after *every*
+successful transition, receiving where it came from, the event, and where it went.
+It's the natural place for cross-cutting concerns — an audit trail, metrics, or
+**persisting the model** after each move:
+
+```go
+Observe(func(ctx context.Context, o *Order, from OrderState, ev OrderEvent, to OrderState) error {
+    return db.SaveStatus(ctx, o)  // persist on every transition; an error rolls back
+})
+```
+
+Observers run last (after `OnEnter`/`OnTransition`) and, like callbacks, an error
+rolls the transition back — so "the move happened" and "the move was recorded"
+never disagree. This is the seam to a database: pair it with a
+[filtrx](https://github.com/zkrebbekx/filtrx) `Update` of the status column.
+
+## 11. Introspection — the machine describes itself
+
+A built machine can answer questions about its own shape, for building UIs,
+tooling, or tests:
+
+```go
+m.States()           // []OrderState{Draft, Paid, Shipped, Cancelled}
+m.Events()           // []OrderEvent{Pay, Ship, Cancel}
+m.IsFinal(Shipped)   // true — no outgoing transition
+m.Unreachable()      // states with no path from the initial state; empty is good
+```
+
+`Unreachable()` is a one-line test that your transition table has no orphan
+states — a typo'd target that nothing can ever reach shows up here.
 
 ## Putting it together
 

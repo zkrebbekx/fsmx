@@ -135,6 +135,8 @@ func Example_mermaid() {
 	//   paid --> shipped: ship
 	//   draft --> cancelled: cancel
 	//   paid --> cancelled: cancel
+	//   shipped --> [*]
+	//   cancelled --> [*]
 }
 
 // Concept: when state already lives in a database column, use New with explicit
